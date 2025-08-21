@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Weather Forecast - Bangalore</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { margin: 0; font-family: 'Inter', sans-serif; color: #fff; overflow: hidden; }
+        #three-canvas { position: fixed; top: 0; left: 0; z-index: -1; }
+        #app-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+        #info-container { text-align: center; padding: 2rem; }
+        h1 { font-size: 3rem; font-weight: 700; margin: 0; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+        p { font-size: 1.2rem; margin-top: 0.5rem; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+        #get-forecast-btn { position: absolute; bottom: 10%; left: 50%; transform: translateX(-50%); padding: 1rem 2rem; font-size: 1rem; font-weight: 600; color: #333; background: rgba(255, 255, 255, 0.8); border: none; border-radius: 50px; cursor: pointer; transition: all 0.3s ease; z-index: 20; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #get-forecast-btn:hover { background: rgba(255, 255, 255, 1); transform: translateX(-50%) scale(1.1); }
+        #forecast-strip { display: flex; justify-content: center; gap: 1rem; padding: 2rem; position: absolute; bottom: -200px; /* Start hidden */ left: 50%; transform: translateX(-50%); transition: all 0.5s ease-in-out; opacity: 0; }
+        .day-box { background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(10px); width: 120px; height: 130px; border-radius: 10px; text-align: center; padding: 0.5rem; cursor: pointer; transition: all 0.3s ease; display: flex; flex-direction: column; justify-content: space-around; }
+        .day-box:hover { background: rgba(255, 255, 255, 0.3); transform: translateY(-10px); }
+        .day-box h3 { margin: 0; font-size: 1.1rem; text-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+        .day-box .temp { font-size: 2.5rem; margin: 0; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+        .day-box .date { font-size: 1rem; margin: 0; color: #dddddd; }
+        #details-view { display: none; position: absolute; bottom: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 1200px; height: 60%; background: rgba(0, 0, 0, 0.4); backdrop-filter: blur(15px); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.2); flex-direction: row; padding: 2rem; gap: 2rem; opacity: 0; transition: opacity 0.5s ease-in-out; }
+        #details-text { flex: 1; }
+        #details-graph { flex: 2; position: relative; }
+        #details-text h2 { font-size: 2.5rem; margin-top: 0; }
+        #details-text p { font-size: 1.5rem; text-align: left; }
+        #back-button { position: absolute; top: 20px; left: 20px; font-size: 2rem; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="three-canvas"></div>
+    <div id="app-container">
+        <div id="info-container"><h1>Forecastify</h1><p>Bengaluru, Karnataka</p></div>
+        <button id="get-forecast-btn">Get 7-Day Forecast</button>
+        <div id="forecast-strip"></div>
+        <div id="details-view">
+            <div id="back-button">&larr;</div>
+            <div id="details-text"></div>
+            <div id="details-graph"><canvas id="forecast-chart"></canvas></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        const getForecastBtn = document.getElementById('get-forecast-btn');
+        const forecastStrip = document.getElementById('forecast-strip');
+        const detailsView = document.getElementById('details-view');
+        const detailsText = document.getElementById('details-text');
+        const backButton = document.getElementById('back-button');
+        let scene, camera, renderer, backgroundClouds, rain, sun, chartInstance, fullForecastData, clock;
+
+        async function init() {
+            const canvasContainer = document.getElementById('three-canvas');
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 5, 80);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            canvasContainer.appendChild(renderer.domElement);
+            clock = new THREE.Clock();
+            
+            try {
+                const response = await fetch('/current-weather');
+                const data = await response.json();
+                setupScene(data.theme);
+            } catch (error) {
+                console.error("Could not fetch current weather, defaulting to sunny.", error);
+                setupScene('sunny');
+            }
+
+            window.addEventListener('resize', onWindowResize, false);
+            backButton.addEventListener('click', showForecastStrip);
+            getForecastBtn.addEventListener('click', fetchForecast);
+            animate();
+        }
+
+        function setupScene(theme) {
+            if (theme === 'rainy') {
+                scene.background = new THREE.Color(0x3d4a57);
+                const hemiLight = new THREE.HemisphereLight(0xaaaaaa, 0x444444, 1);
+                scene.add(hemiLight);
+                createRainEffect();
+            } else { // Sunny or Cloudy
+                scene.background = new THREE.Color(0x87CEEB); // Always blue sky
+                const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+                scene.add(hemiLight);
+                const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+                dirLight.position.set(100, 100, 50);
+                scene.add(dirLight);
+                if (theme === 'sunny') createSun();
+            }
+            createBackgroundClouds(theme);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsedTime = clock.getElapsedTime();
+
+            if (backgroundClouds) {
+                backgroundClouds.position.x += 0.02;
+                if (backgroundClouds.position.x > 200) backgroundClouds.position.x = -200;
+                
+                const cycleDuration = 10;
+                const progress = (elapsedTime % cycleDuration) / cycleDuration;
+                
+                const colorWhite = new THREE.Color(0xffffff);
+                const colorGray = new THREE.Color(0x808080);
+                const colorBlack = new THREE.Color(0x202020);
+                let currentColor = new THREE.Color();
+
+                if (progress < 0.33) {
+                    currentColor.lerpColors(colorWhite, colorGray, progress / 0.33);
+                } else if (progress < 0.66) {
+                    currentColor.lerpColors(colorGray, colorBlack, (progress - 0.33) / 0.33);
+                } else {
+                    currentColor.lerpColors(colorBlack, colorWhite, (progress - 0.66) / 0.34);
+                }
+                backgroundClouds.children.forEach(cloud => {
+                    cloud.children.forEach(part => part.material.color.set(currentColor));
+                });
+            }
+
+            if (rain) {
+                rain.children.forEach(p => { p.position.y -= 1.5; if (p.position.y < -100) p.position.y = 100; });
+            }
+            if (sun) {
+                sun.rotation.y += 0.001;
+            }
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function createPuffyCloud(material) {
+            const cloudGroup = new THREE.Group();
+            const sphereGeo = new THREE.SphereGeometry(3, 8, 8);
+            for (let i = 0; i < 5; i++) {
+                const cloudPart = new THREE.Mesh(sphereGeo, material.clone());
+                const scale = Math.random() * 2.5 + 2.5;
+                cloudPart.scale.set(scale, scale, scale);
+                cloudPart.position.set((Math.random() - 0.5) * 15, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 5);
+                cloudGroup.add(cloudPart);
+            }
+            return cloudGroup;
+        }
+
+        function createBackgroundClouds(theme) {
+            backgroundClouds = new THREE.Group();
+            const material = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
+            for (let i = 0; i < 20; i++) {
+                const cloud = createPuffyCloud(material);
+                cloud.scale.setScalar(Math.random() * 2 + 2);
+                cloud.position.set((Math.random() - 0.5) * 400, Math.random() * 40 + 20, (Math.random() - 0.5) * 100 - 50);
+                backgroundClouds.add(cloud);
+            }
+            scene.add(backgroundClouds);
+        }
+
+        function createRainEffect() {
+            rain = new THREE.Group();
+            const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.5 });
+            for (let i = 0; i < 2000; i++) {
+                const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -1.5, 0)]);
+                const line = new THREE.Line(geometry, material);
+                line.position.set((Math.random() - 0.5) * 400, (Math.random() - 0.5) * 200, (Math.random() - 0.5) * 200);
+                rain.add(line);
+            }
+            scene.add(rain);
+        }
+
+        function createSun() {
+            sun = new THREE.Group();
+            const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffddaa, transparent: true, opacity: 0.8 });
+            const sunMesh = new THREE.Mesh(new THREE.SphereGeometry(10, 32, 32), sunMaterial);
+            sun.add(sunMesh);
+            sun.position.set(-150, 80, -200);
+            scene.add(sun);
+        }
+
+        async function fetchForecast() {
+            getForecastBtn.style.display = 'none';
+            try {
+                const response = await fetch('/predict');
+                if (!response.ok) throw new Error('Network response was not ok');
+                fullForecastData = await response.json();
+                displayForecastStrip(fullForecastData);
+                forecastStrip.style.bottom = '10%';
+                forecastStrip.style.opacity = '1';
+            } catch (error) {
+                console.error('Fetch error:', error);
+                getForecastBtn.style.display = 'block';
+            }
+        }
+
+        function displayForecastStrip(data) {
+            forecastStrip.innerHTML = '';
+            data.forEach((day, index) => {
+                const box = document.createElement('div');
+                box.className = 'day-box';
+                
+                // Format the date to include the year in MM/DD/YY format
+                const [year, month, dayNum] = day.date.split('-');
+                const formattedDate = `${month}/${dayNum}/${year.substring(2)}`;
+
+                // UPDATED to include the new date format
+                box.innerHTML = `
+                    <h3>${day.day_name}</h3>
+                    <p class="temp">${day.temp_max}°</p>
+                    <p class="date">${formattedDate}</p>
+                `;
+                box.addEventListener('click', () => showDetails(index));
+                forecastStrip.appendChild(box);
+            });
+        }
+
+        function showDetails(dayIndex) {
+            const data = fullForecastData[dayIndex];
+            
+            forecastStrip.style.bottom = '-200px';
+            forecastStrip.style.opacity = '0';
+
+            detailsText.innerHTML = `
+                <h2>${data.day_name}</h2>
+                <p>Date: ${data.date}</p>
+                <p style="color: #ffb3c1;">Max Temp: ${data.temp_max}°C</p>
+                <p style="color: #8ecae6;">Min Temp: ${data.temp_min}°C</p>
+                <p style="color: #a7c957;">Avg Humidity: ${data.humidity}%</p>
+            `;
+            detailsView.style.display = 'flex';
+            setTimeout(() => { detailsView.style.opacity = '1'; }, 10);
+
+            showChart(data);
+        }
+
+        function showForecastStrip() {
+            detailsView.style.opacity = '0';
+            setTimeout(() => { detailsView.style.display = 'none'; }, 500);
+
+            forecastStrip.style.bottom = '10%';
+            forecastStrip.style.opacity = '1';
+        }
+
+        function showChart(data) {
+            const ctx = document.getElementById('forecast-chart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+
+            const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: hours,
+                    datasets: [
+                        {
+                            label: 'Temperature (°C)',
+                            data: data.hourly_temps,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            yAxisID: 'y_temp',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: 'Humidity (%)',
+                            data: data.hourly_humidity,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                            yAxisID: 'y_humidity',
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y_temp: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: { display: true, text: 'Temperature (°C)', color: '#fff', font: { size: 14 } },
+                            ticks: { color: '#fff' }
+                        },
+                        y_humidity: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            min: 0,
+                            max: 100,
+                            title: { display: true, text: 'Humidity (%)', color: '#fff', font: { size: 14 } },
+                            ticks: { color: '#fff' },
+                            grid: { drawOnChartArea: false }
+                        },
+                        x: {
+                            ticks: { color: '#fff' }
+                        }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#fff', font: { size: 14 } } }
+                    }
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
